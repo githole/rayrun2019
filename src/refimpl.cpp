@@ -1,7 +1,7 @@
 ﻿
 
 
-#if 0
+#if 1
 //
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
@@ -19,6 +19,7 @@
 //
 #include "rayrun.hpp"
 #include "vec3.h"
+#include "simd_vec.h"
 
 #include <immintrin.h>
 
@@ -75,45 +76,6 @@ namespace impl
 
     std::vector<SIMDTrianglePack> simd_triangles;
 
-    inline __m512 operator+(const __m512& a, const __m512& b)
-    {
-        return _mm512_add_ps(a, b);
-    }
-
-    inline __m512 operator-(const __m512& a, const __m512& b)
-    {
-        return _mm512_sub_ps(a, b);
-    }
-
-    inline __m512 operator*(const __m512& a, const __m512& b)
-    {
-        return _mm512_mul_ps(a, b);
-    }
-
-    inline __m512 operator/(const __m512& a, const __m512& b)
-    {
-        return _mm512_div_ps(a, b);
-    }
-
-    inline __mmask16 operator==(const __m512& a, const __m512& b)
-    {
-        return _mm512_cmp_ps_mask(a, b, _CMP_EQ_OQ);
-    }
-
-    inline __mmask16 operator<(const __m512& a, const __m512& b)
-    {
-        return _mm512_cmp_ps_mask(a, b, _CMP_LT_OS);
-    }
-
-    inline __mmask16 operator>(const __m512& a, const __m512& b)
-    {
-        return _mm512_cmp_ps_mask(a, b, _CMP_GT_OS);
-    }
-
-    inline __mmask16 or(const __mmask16& a, const __mmask16& b)
-    {
-        return _mm512_kor(a, b);
-    }
 
     alignas(64) float t0_f[PackedTriangle];
     alignas(64) float t1_f[PackedTriangle];
@@ -242,6 +204,8 @@ namespace impl
         }
     };
     std::vector<Task> thraed_task;
+
+    std::atomic<uint32_t> prev_index;
 }
 
 
@@ -524,7 +488,40 @@ void intersect(
             avx_dir[2] = _mm512_load_ps(dir_z);
 
             impl::Hitpoint hitpoint;
+
+            struct Span
+            {
+                size_t begin;
+                size_t end;
+            };
+
+            Span span[2];
+
+            span[0].begin = 0;
+            span[0].end = impl::simd_triangles.size() / 2;
+
+            span[1].begin = span[0].end;
+            span[1].end = impl::simd_triangles.size();
+
+            for (int s = 0; s < 2; ++s)
+            {
+                for (size_t i = span[s].begin; i < span[s].end; ++i)
+                {
+                    impl::ray_vs_triangle(current_ray->tnear, current_ray->tfar, avx_org, avx_dir,
+                        impl::simd_triangles[i], &hitpoint);
+
+                    if (hitpoint.hit)
+                    {
+                        if (hitany)
+                        {
+                            goto END;
+                        }
+                    }
+                }
+            }
+            END:
             
+#if 0
             for (size_t i = 0; i < impl::simd_triangles.size(); ++i)
             {
                 impl::ray_vs_triangle(current_ray->tnear, current_ray->tfar, avx_org, avx_dir,
@@ -538,6 +535,7 @@ void intersect(
                     }
                 }
             }
+#endif
 
             if (hitpoint.hit)
             {
