@@ -31,6 +31,11 @@ inline __mmask16 operator<(const __m512& a, const __m512& b)
     return _mm512_cmp_ps_mask(a, b, _CMP_LT_OS);
 }
 
+inline __mmask16 operator>=(const __m512& a, const __m512& b)
+{
+    return _mm512_cmp_ps_mask(a, b, _CMP_GE_OS);
+}
+
 inline __mmask16 operator>(const __m512& a, const __m512& b)
 {
     return _mm512_cmp_ps_mask(a, b, _CMP_GT_OS);
@@ -41,6 +46,7 @@ inline __mmask16 or (const __mmask16& a, const __mmask16& b)
     return _mm512_kor(a, b);
 }
 
+
 inline __mmask16 and (const __mmask16& a, const __mmask16& b)
 {
     return _mm512_kand(a, b);
@@ -49,6 +55,16 @@ inline __mmask16 and (const __mmask16& a, const __mmask16& b)
 inline __mmask16 not (const __mmask16& a)
 {
     return _mm512_knot(a);
+}
+
+inline __m512 max(const __m512& a, const __m512& b)
+{
+    return _mm512_max_ps(a, b);
+}
+
+inline __m512 min(const __m512& a, const __m512& b)
+{
+    return _mm512_min_ps(a, b);
 }
 
 namespace math

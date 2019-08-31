@@ -73,9 +73,52 @@ namespace impl
         __m512 z[3];
         uint32_t triangle_offset;
     };
-
     std::vector<SIMDTrianglePack> simd_triangles;
 
+    struct AABB
+    {
+        math::Float3 pmin, pmax;
+
+        AABB()
+        {
+            constexpr auto inf = std::numeric_limits<float>::infinity();
+            pmin = math::Float3(inf, inf, inf);
+            pmax = -pmin;
+        }
+
+        void add(const math::Float3& p)
+        {
+            for (int i = 0; i < 3; ++i)
+            {
+                pmin[i] = std::min(pmin[i], p[i]);
+                pmax[i] = std::max(pmax[i], p[i]);
+            }
+        }
+
+        void add(const AABB& box)
+        {
+            for (int i = 0; i < 3; ++i)
+            {
+                pmin[i] = std::min(pmin[i], box.pmin[i]);
+                pmax[i] = std::max(pmax[i], box.pmax[i]);
+            }
+        }
+    };
+    std::vector<AABB> AABB_for_simd_triangles;
+
+    struct alignas(64) SIMDAABB
+    {
+        __m512 bboxes[2][3]; // 16boxes : min-max[2] of xyz[3] of boxes[16]
+        uint32_t begin[16];
+        uint32_t end[16];
+
+        SIMDAABB()
+        {
+            std::fill(begin, begin + 16, 0);
+            std::fill(end, end + 16, 0);
+        }
+    };
+    std::vector<SIMDAABB> top_AABB_list;
 
     alignas(64) float t0_f[PackedTriangle];
     alignas(64) float t1_f[PackedTriangle];
@@ -111,7 +154,16 @@ namespace impl
         int index;
     };
 
-    void ray_vs_triangle(__m512& current_distance, __m512 near_t, __m512 far_t, __m512 org[3], __m512 dir[3], const SIMDTrianglePack& s, Hitpoint* hitpoint)
+
+
+    void ray_vs_triangle(
+        __m512& current_distance,
+        __m512 near_t,
+        __m512 far_t,
+        const __m512 org[3],
+        const __m512 dir[3],
+        const SIMDTrianglePack& s,
+        Hitpoint* hitpoint)
     {
         alignas(64) float t_f[PackedTriangle];
         alignas(64) float b1_f[PackedTriangle];
@@ -206,6 +258,47 @@ namespace impl
 #endif
     }
 
+    int ray_vs_AABB(
+        const __m512 bboxes[2][3],  //16boxes : min-max[2] of xyz[3] of boxes[16]
+
+        const __m512 org[3],        //ray origin
+        const __m512 idir[3],       //ray inveresed direction
+        const int sign[3],          //ray xyz direction -> +:0,-:1
+        __m512 tmin, __m512 tmax    //ray range tmin-tmax 
+    )
+    {
+        // x coordinate
+        tmin = max(
+            tmin,
+            (bboxes[sign[0]][0] - org[0]) * idir[0]
+        );
+        tmax = min(
+            tmax,
+            (bboxes[1 - sign[0]][0] - org[0]) * idir[0]
+        );
+
+        // y coordinate
+        tmin = max(
+            tmin,
+            (bboxes[sign[1]][1] - org[1]) * idir[1]
+        );
+        tmax = min(
+            tmax,
+            (bboxes[1 - sign[1]][1] - org[1]) * idir[1]
+        );
+
+        // z coordinate
+        tmin = max(
+            tmin,
+            (bboxes[sign[2]][2] - org[2]) * idir[2]
+        );
+        tmax = min(
+            tmax,
+           (bboxes[1 - sign[2]][2] - org[2]) * idir[2]
+        );
+        return (int)(tmax >= tmin);//tmin<tmaxとなれば交差
+    }
+
 
     static constexpr int NUM_THREAD = 16;
 
@@ -239,7 +332,6 @@ namespace impl
 
     std::atomic<uint32_t> prev_index;
 }
-
 
 //
 void preprocess(
@@ -279,10 +371,12 @@ void preprocess(
     impl::normals = std::vector<float>(normals, normals + numNormals * 3);
     impl::triangles.resize(numFace);
     impl::simd_triangles.resize((numFace / PackedTriangle) + 1);
+    impl::AABB_for_simd_triangles.resize(impl::simd_triangles.size());
 
     alignas(64) float x[PackedTriangle * 3] = {};
     alignas(64) float y[PackedTriangle * 3] = {};
     alignas(64) float z[PackedTriangle * 3] = {};
+    impl::AABB current_AABB;
 
     int simd_index = 0;
 
@@ -298,7 +392,6 @@ void preprocess(
             impl::triangles[i].n[0][a] = impl::normals[indices[i * 6 + 1] * 3 + a];
             impl::triangles[i].n[1][a] = impl::normals[indices[i * 6 + 3] * 3 + a];
             impl::triangles[i].n[2][a] = impl::normals[indices[i * 6 + 5] * 3 + a];
-
         }
 
         for (int v = 0; v < 3; ++v)
@@ -306,11 +399,14 @@ void preprocess(
             x[offset + PackedTriangle * v] = impl::triangles[i].v[v][0];
             y[offset + PackedTriangle * v] = impl::triangles[i].v[v][1];
             z[offset + PackedTriangle * v] = impl::triangles[i].v[v][2];
+            current_AABB.add(impl::triangles[i].v[v]);
         }
 
         if (offset == PackedTriangle - 1 || i == numFace - 1)
         {
-            auto& t = impl::simd_triangles[simd_index++];
+            auto& t = impl::simd_triangles[simd_index];
+            auto& aabb = impl::AABB_for_simd_triangles[simd_index];
+            ++simd_index;
 
             for (int v = 0; v < 3; ++v)
             {
@@ -319,11 +415,66 @@ void preprocess(
                 t.z[v] = _mm512_load_ps(z + PackedTriangle * v);
             }
             t.triangle_offset = i - (PackedTriangle - 1);
+            aabb = current_AABB;
 
             std::fill(x, x + PackedTriangle * 3, 0);
             std::fill(y, y + PackedTriangle * 3, 0);
             std::fill(z, z + PackedTriangle * 3, 0);
+            current_AABB = impl::AABB();
         }
+    }
+
+    // 全体を16分割してそれぞれのAABBを作る
+    {
+        alignas(64) float pmin[3][16] = {};
+        alignas(64) float pmax[3][16] = {};
+
+        for (int i = 0; i < 3; ++i)
+        {
+            std::fill(pmin[i], pmin[i] + 16 * 3, std::numeric_limits<float>::infinity());
+            std::fill(pmax[i], pmax[i] + 16 * 3, -std::numeric_limits<float>::infinity());
+        }
+
+        const auto simd_prim_size = impl::AABB_for_simd_triangles.size();
+        int N = simd_prim_size / 16;
+        if (N == 0)
+            N = 1;
+
+        // impl::AABB aabb[16];
+        const int num_loop = 
+            simd_prim_size < 16 ? simd_prim_size : 16;
+
+        impl::SIMDAABB simd_aabb;
+        for (int k = 0; k < num_loop; ++k)
+        {
+
+            int begin = k * N;
+            int end = (k + 1) * N;
+            if (k == num_loop - 1)
+                end = simd_prim_size;
+
+            for (int i = begin; i < end; ++i)
+            {
+                // aabb[k].add(impl::AABB_for_simd_triangles[i]);
+                for (int x = 0; x < 3; ++x)
+                {
+                    pmin[x][k] = std::min(pmin[x][k], impl::AABB_for_simd_triangles[i].pmin[x]);
+                    pmax[x][k] = std::max(pmax[x][k], impl::AABB_for_simd_triangles[i].pmax[x]);
+                }
+            }
+
+            simd_aabb.begin[k] = begin;
+            simd_aabb.end[k] = end;
+        }
+
+
+        for (int x = 0; x < 3; ++x)
+        {
+            simd_aabb.bboxes[0][x] = _mm512_load_ps(pmin[x]);
+            simd_aabb.bboxes[1][x] = _mm512_load_ps(pmax[x]);
+        }
+
+        impl::top_AABB_list.push_back(simd_aabb);
     }
 }
 
@@ -492,48 +643,35 @@ void intersect(
 #else
         // SIMD
         {
-            alignas(64) float org_x[PackedTriangle];
-            alignas(64) float org_y[PackedTriangle];
-            alignas(64) float org_z[PackedTriangle];
-            alignas(64) float dir_x[PackedTriangle];
-            alignas(64) float dir_y[PackedTriangle];
-            alignas(64) float dir_z[PackedTriangle];
+            alignas(64) float org[3][PackedTriangle];
+            alignas(64) float dir[3][PackedTriangle];
+            alignas(64) float idir[3][PackedTriangle];
 
             for (int i = 0; i < PackedTriangle; ++i)
             {
-                org_x[i] = current_ray->pos[0];
-                org_y[i] = current_ray->pos[1];
-                org_z[i] = current_ray->pos[2];
-
-                dir_x[i] = current_ray->dir[0];
-                dir_y[i] = current_ray->dir[1];
-                dir_z[i] = current_ray->dir[2];
+                for (int x = 0; x < 3; ++x)
+                {
+                    org[x][i] = current_ray->pos[x];
+                    dir[x][i] = current_ray->dir[x];
+                    idir[x][i] = 1.0f / current_ray->dir[x];
+                }
             }
 
             __m512 avx_org[3];
-            avx_org[0] = _mm512_load_ps(org_x);
-            avx_org[1] = _mm512_load_ps(org_y);
-            avx_org[2] = _mm512_load_ps(org_z);
             __m512 avx_dir[3];
-            avx_dir[0] = _mm512_load_ps(dir_x);
-            avx_dir[1] = _mm512_load_ps(dir_y);
-            avx_dir[2] = _mm512_load_ps(dir_z);
+            __m512 avx_idir[3];
+            int sign[3];
+            for (int x = 0; x < 3; ++x)
+                sign[x] = (1.0f / current_ray->dir[x]) < 0;
+
+            for (int x = 0; x < 3; ++x)
+            {
+                avx_org[x]  = _mm512_load_ps(org[x]);
+                avx_dir[x]  = _mm512_load_ps(dir[x]);
+                avx_idir[x] = _mm512_load_ps(idir[x]);
+            }
 
             impl::Hitpoint hitpoint;
-
-            struct Span
-            {
-                size_t begin;
-                size_t end;
-            };
-
-            Span span[2];
-
-            span[0].begin = 0;
-            span[0].end = impl::simd_triangles.size() / 2;
-
-            span[1].begin = span[0].end;
-            span[1].end = impl::simd_triangles.size();
 
             alignas(64) float near_t_data[PackedTriangle];
             alignas(64) float far_t_data[PackedTriangle];
@@ -546,23 +684,48 @@ void intersect(
             std::fill(current_distance_data, current_distance_data + PackedTriangle, hitpoint.distance);
             __m512 current_distance = _mm512_load_ps(current_distance_data);
 
-            for (int s = 0; s < 2; ++s)
+#if 1
+            // simd AABB
+            for (int i = 0; i < impl::top_AABB_list.size(); ++i)
             {
-                for (size_t i = span[s].begin; i < span[s].end; ++i)
+                auto& aabb = impl::top_AABB_list[i];
+                const auto hit_aabb = impl::ray_vs_AABB(aabb.bboxes, avx_org, avx_idir, sign, near_t, current_distance);
+                for (int i = 0; i < 16; ++i)
                 {
-                    impl::ray_vs_triangle(current_distance, near_t, far_t, avx_org, avx_dir, impl::simd_triangles[i], &hitpoint);
-//                    impl::ray_vs_triangle(current_distance, current_ray->tnear, current_ray->tfar, avx_org, avx_dir, impl::simd_triangles[i], &hitpoint);
-
-                    if (hitpoint.hit)
+                    if (hit_aabb & (1 << i))
                     {
-                        if (hitany)
+                        auto begin = aabb.begin[i];
+                        auto end = aabb.end[i];
+                        for (size_t i = begin; i < end; ++i)
                         {
-                            goto END;
+                            impl::ray_vs_triangle(current_distance, near_t, far_t, avx_org, avx_dir, impl::simd_triangles[i], &hitpoint);
+                            if (hitpoint.hit)
+                            {
+                                if (hitany)
+                                {
+                                    goto END;
+                                }
+                            }
                         }
                     }
                 }
             }
             END:
+#endif
+#if 0
+            // simd simple
+            for (size_t i = 0; i < impl::simd_triangles.size(); ++i)
+            {
+                impl::ray_vs_triangle(current_distance, near_t, far_t, avx_org, avx_dir, impl::simd_triangles[i], &hitpoint);
+                if (hitpoint.hit)
+                {
+                    if (hitany)
+                    {
+                        break;
+                    }
+                }
+            }
+#endif
             
 #if 0
             for (size_t i = 0; i < impl::simd_triangles.size(); ++i)
