@@ -93,7 +93,7 @@ namespace impl
         for (int i = 0; i < PackedTriangle; ++i)
         {
             t0_f[i] = -eps;
-            t1_f[i] = 1+eps;
+            t1_f[i] = 1 + eps;
             zero_data[i] = 0;
             one_data[i] = 1;
             eps_data[i] = 1e-6f;
@@ -111,7 +111,7 @@ namespace impl
         int index;
     };
 
-    void ray_vs_triangle(float near_t, float far_t, __m512 org[3], __m512 dir[3], const SIMDTrianglePack& s, Hitpoint* hitpoint)
+    void ray_vs_triangle(__m512& current_distance, __m512 near_t, __m512 far_t, __m512 org[3], __m512 dir[3], const SIMDTrianglePack& s, Hitpoint* hitpoint)
     {
         alignas(64) float t_f[PackedTriangle];
         alignas(64) float b1_f[PackedTriangle];
@@ -153,6 +153,37 @@ namespace impl
         auto t = (e2_x * s2_x + e2_y * s2_y + e2_z * s2_z) * invDivisor;
         no_hit = or(no_hit, t < keps);
 
+#if 1
+        auto hit_flag = and(not(no_hit), and(and(near_t < t, t < far_t), t < current_distance));
+        int hit_flag_int = hit_flag;
+        if (hit_flag_int == 0)
+            return;
+
+        _mm512_store_ps(t_f, t);
+        _mm512_store_ps(b1_f, b1);
+        _mm512_store_ps(b2_f, b2);
+
+        int k = 0;
+        for (int i = 0; i < PackedTriangle; ++i) {
+            if ((hit_flag_int & (1 << i)) && t_f[i] < hitpoint->distance)
+            {
+                hitpoint->hit = true;
+                hitpoint->index = s.triangle_offset + i;
+                hitpoint->distance = t_f[i];
+                hitpoint->b1 = b1_f[i];
+                hitpoint->b2 = b2_f[i];
+                k = 1;
+            }
+        }
+
+        if (k)
+        {
+            alignas(64) float dist[PackedTriangle];
+            std::fill(dist, dist + PackedTriangle, hitpoint->distance);
+            current_distance = _mm512_load_ps(dist);
+        }
+#endif
+#if 0
         int nohitmask = no_hit;
 
         _mm512_store_ps(t_f, t);
@@ -172,6 +203,7 @@ namespace impl
                 }
             }
         }
+#endif
     }
 
 
@@ -503,12 +535,23 @@ void intersect(
             span[1].begin = span[0].end;
             span[1].end = impl::simd_triangles.size();
 
+            alignas(64) float near_t_data[PackedTriangle];
+            alignas(64) float far_t_data[PackedTriangle];
+            std::fill(near_t_data, near_t_data + PackedTriangle, current_ray->tnear);
+            std::fill(far_t_data, far_t_data + PackedTriangle, current_ray->tfar);
+            __m512 near_t = _mm512_load_ps(near_t_data);
+            __m512 far_t = _mm512_load_ps(far_t_data);
+
+            alignas(64) float current_distance_data[PackedTriangle];
+            std::fill(current_distance_data, current_distance_data + PackedTriangle, hitpoint.distance);
+            __m512 current_distance = _mm512_load_ps(current_distance_data);
+
             for (int s = 0; s < 2; ++s)
             {
                 for (size_t i = span[s].begin; i < span[s].end; ++i)
                 {
-                    impl::ray_vs_triangle(current_ray->tnear, current_ray->tfar, avx_org, avx_dir,
-                        impl::simd_triangles[i], &hitpoint);
+                    impl::ray_vs_triangle(current_distance, near_t, far_t, avx_org, avx_dir, impl::simd_triangles[i], &hitpoint);
+//                    impl::ray_vs_triangle(current_distance, current_ray->tnear, current_ray->tfar, avx_org, avx_dir, impl::simd_triangles[i], &hitpoint);
 
                     if (hitpoint.hit)
                     {

@@ -41,6 +41,16 @@ inline __mmask16 or (const __mmask16& a, const __mmask16& b)
     return _mm512_kor(a, b);
 }
 
+inline __mmask16 and (const __mmask16& a, const __mmask16& b)
+{
+    return _mm512_kand(a, b);
+}
+
+inline __mmask16 not (const __mmask16& a)
+{
+    return _mm512_knot(a);
+}
+
 namespace math
 {
     struct SimdVec3 final
