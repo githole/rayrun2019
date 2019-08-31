@@ -1,68 +1,79 @@
 
 #include <immintrin.h>
 
-inline __m512 operator+(const __m512& a, const __m512& b)
+struct m512
 {
-    return _mm512_add_ps(a, b);
+    __m512 v;
+
+    m512(__m512 x) : v(x) {}
+
+    operator __m512() const
+    {
+        return v;
+    }
+};
+
+inline __m512 operator+(const m512& a, const m512& b)
+{
+    return _mm512_add_ps(a.v, b.v);
 }
 
-inline __m512 operator-(const __m512& a, const __m512& b)
+inline __m512 operator-(const m512& a, const m512& b)
 {
     return _mm512_sub_ps(a, b);
 }
 
-inline __m512 operator*(const __m512& a, const __m512& b)
+inline __m512 operator*(const m512& a, const m512& b)
 {
     return _mm512_mul_ps(a, b);
 }
 
-inline __m512 operator/(const __m512& a, const __m512& b)
+inline __m512 operator/(const m512& a, const m512& b)
 {
     return _mm512_div_ps(a, b);
 }
 
-inline __mmask16 operator==(const __m512& a, const __m512& b)
+inline __mmask16 eq(const m512& a, const m512& b)
 {
     return _mm512_cmp_ps_mask(a, b, _CMP_EQ_OQ);
 }
 
-inline __mmask16 operator<(const __m512& a, const __m512& b)
+inline __mmask16 lt(const m512& a, const m512& b)
 {
     return _mm512_cmp_ps_mask(a, b, _CMP_LT_OS);
 }
 
-inline __mmask16 operator>=(const __m512& a, const __m512& b)
+inline __mmask16 ge(const m512& a, const m512& b)
 {
     return _mm512_cmp_ps_mask(a, b, _CMP_GE_OS);
 }
 
-inline __mmask16 operator>(const __m512& a, const __m512& b)
+inline __mmask16 gt(const m512& a, const m512& b)
 {
     return _mm512_cmp_ps_mask(a, b, _CMP_GT_OS);
 }
 
-inline __mmask16 or (const __mmask16& a, const __mmask16& b)
+inline __mmask16 or_ (const __mmask16& a, const __mmask16& b)
 {
     return _mm512_kor(a, b);
 }
 
-
-inline __mmask16 and (const __mmask16& a, const __mmask16& b)
+inline __mmask16 and_ (const __mmask16& a, const __mmask16& b)
 {
     return _mm512_kand(a, b);
 }
 
-inline __mmask16 not (const __mmask16& a)
+inline __mmask16 not_ (const __mmask16& a)
 {
     return _mm512_knot(a);
 }
 
-inline __m512 max(const __m512& a, const __m512& b)
+inline __m512 max(const m512& a, const m512& b)
 {
     return _mm512_max_ps(a, b);
 }
 
-inline __m512 min(const __m512& a, const __m512& b)
+inline __m512 min(const m512& a, const m512& b)
 {
     return _mm512_min_ps(a, b);
 }

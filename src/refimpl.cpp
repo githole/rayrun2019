@@ -185,7 +185,7 @@ namespace impl
         auto s1_z = dir[0] * e2_y - dir[1] * e2_x;
 
         auto divisor = s1_x * e1_x + s1_y * e1_y + s1_z * e1_z;
-        auto no_hit = divisor == zero;
+        auto no_hit = eq(divisor, zero);
         auto invDivisor = one / divisor;
 
         auto d_x = org[0] - s.x[0];
@@ -193,20 +193,20 @@ namespace impl
         auto d_z = org[2] - s.z[0];
 
         auto b1 = (d_x * s1_x + d_y * s1_y + d_z * s1_z) * invDivisor;
-        no_hit = or(no_hit, or(b1 < t0, b1 > t1));
+        no_hit = or_(no_hit, or_(lt(b1, t0), gt(b1, t1)));
 
         auto s2_x = d_y * e1_z - d_z * e1_y;
         auto s2_y = d_z * e1_x - d_x * e1_z;
         auto s2_z = d_x * e1_y - d_y * e1_x;
 
         auto b2 = (dir[0] * s2_x + dir[1] * s2_y + dir[2] * s2_z) * invDivisor;
-        no_hit = or(no_hit, or(b2 < t0, (b1 + b2) > t1));
+        no_hit = or_(no_hit, or_(lt(b2, t0), gt((b1 + b2), t1)));
 
         auto t = (e2_x * s2_x + e2_y * s2_y + e2_z * s2_z) * invDivisor;
-        no_hit = or(no_hit, t < keps);
+        no_hit = or_(no_hit, lt(t, keps));
 
 #if 1
-        auto hit_flag = and(not(no_hit), and(and(near_t < t, t < far_t), t < current_distance));
+        auto hit_flag = and_(not_(no_hit), and_(and_(lt(near_t, t), lt(t, far_t)), lt(t, current_distance)));
         int hit_flag_int = hit_flag;
         if (hit_flag_int == 0)
             return;
@@ -296,7 +296,7 @@ namespace impl
             tmax,
            (bboxes[1 - sign[2]][2] - org[2]) * idir[2]
         );
-        return (int)(tmax >= tmin);//tmin<tmaxとなれば交差
+        return (int)ge(tmax, tmin);//tmin<tmaxとなれば交差
     }
 
 
@@ -314,6 +314,7 @@ namespace impl
 
     void hoge() {}
 
+#if 0
     struct Task
     {
         std::atomic<bool> valid = false;
@@ -329,7 +330,7 @@ namespace impl
         }
     };
     std::vector<Task> thraed_task;
-
+#endif
     std::atomic<uint32_t> prev_index;
 }
 
@@ -428,7 +429,7 @@ void preprocess(
     // 全体をK分割するver
     {
         const auto total_simd_prim_size = impl::AABB_for_simd_triangles.size();
-        int DIV = (total_simd_prim_size / 16);
+        int DIV = (total_simd_prim_size / 32);
         if (DIV < 1)
             DIV = 1;
         int num_divloop = total_simd_prim_size / DIV;
