@@ -424,6 +424,72 @@ void preprocess(
         }
     }
 
+#if 1
+    // 全体をK分割するver
+    {
+        const auto total_simd_prim_size = impl::AABB_for_simd_triangles.size();
+        int DIV = (total_simd_prim_size / 16);
+        if (DIV < 1)
+            DIV = 1;
+        int num_divloop = total_simd_prim_size / DIV;
+        if (num_divloop == 0)
+            num_divloop = 1;
+
+        for (int div = 0; div < num_divloop; ++div)
+        {
+            int range_begin = div * DIV;
+            int range_end = (div + 1) * DIV;
+            if (div == DIV - 1)
+                range_end = total_simd_prim_size;
+
+            // init
+            alignas(64) float pmin[3][16] = {};
+            alignas(64) float pmax[3][16] = {};
+            for (int i = 0; i < 3; ++i)
+            {
+                std::fill(pmin[i], pmin[i] + 16, std::numeric_limits<float>::infinity());
+                std::fill(pmax[i], pmax[i] + 16, -std::numeric_limits<float>::infinity());
+            }
+
+            const auto simd_prim_size = range_end - range_begin;
+            int N = simd_prim_size / 16;
+            if (N == 0)
+                N = 1;
+            const int num_loop =
+                simd_prim_size < 16 ? simd_prim_size : 16;
+
+            impl::SIMDAABB simd_aabb;
+            for (int k = 0; k < num_loop; ++k)
+            {
+                int begin = k * N;
+                int end = (k + 1) * N;
+                if (k == num_loop - 1)
+                    end = simd_prim_size;
+
+                for (int i = begin; i < end; ++i)
+                {
+                    for (int x = 0; x < 3; ++x)
+                    {
+                        pmin[x][k] = std::min(pmin[x][k], impl::AABB_for_simd_triangles[i + range_begin].pmin[x]);
+                        pmax[x][k] = std::max(pmax[x][k], impl::AABB_for_simd_triangles[i + range_begin].pmax[x]);
+                    }
+                }
+
+                simd_aabb.begin[k] = range_begin + begin;
+                simd_aabb.end[k] = range_begin + end;
+            }
+
+            for (int x = 0; x < 3; ++x)
+            {
+                simd_aabb.bboxes[0][x] = _mm512_load_ps(pmin[x]);
+                simd_aabb.bboxes[1][x] = _mm512_load_ps(pmax[x]);
+            }
+            impl::top_AABB_list.push_back(simd_aabb);
+        }
+    }
+#endif
+
+#if 0
     // 全体を16分割してそれぞれのAABBを作る
     {
         alignas(64) float pmin[3][16] = {};
@@ -476,6 +542,7 @@ void preprocess(
 
         impl::top_AABB_list.push_back(simd_aabb);
     }
+#endif
 }
 
 
@@ -686,16 +753,16 @@ void intersect(
 
 #if 1
             // simd AABB
-            for (int i = 0; i < impl::top_AABB_list.size(); ++i)
+            for (int aabb_list = 0; aabb_list < impl::top_AABB_list.size(); ++aabb_list)
             {
-                auto& aabb = impl::top_AABB_list[i];
+                auto& aabb = impl::top_AABB_list[aabb_list];
                 const auto hit_aabb = impl::ray_vs_AABB(aabb.bboxes, avx_org, avx_idir, sign, near_t, current_distance);
-                for (int i = 0; i < 16; ++i)
+                for (int hit = 0; hit < 16; ++hit)
                 {
-                    if (hit_aabb & (1 << i))
+                    if (hit_aabb & (1 << hit))
                     {
-                        auto begin = aabb.begin[i];
-                        auto end = aabb.end[i];
+                        auto begin = aabb.begin[hit];
+                        auto end = aabb.end[hit];
                         for (size_t i = begin; i < end; ++i)
                         {
                             impl::ray_vs_triangle(current_distance, near_t, far_t, avx_org, avx_dir, impl::simd_triangles[i], &hitpoint);
